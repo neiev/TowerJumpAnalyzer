@@ -99,10 +99,42 @@ class TowerJumpAnalyzer:
         }
     
     def calculate_velocity(self, time_diff, distance):
-        """Calcula a velocidade entre dois pontos em km/h e a distância """
+        """Calcula a velocidade entre dois pontos em km/h.
+        
+        Args:
+            time_diff: Diferença de tempo em segundos (deve ser positivo)
+            distance: Distância percorrida em quilômetros (deve ser não negativa)
+        
+        Returns:
+            Velocidade em km/h (float) ou 0 em casos inválidos
+        """
+        # Casos inválidos: tempo não positivo OU distância negativa
         if time_diff <= 0 or distance < 0:
-            return 0
-        return  distance / (time_diff / 3600)  # km/h
+            return 0.0
+
+        # Caso especial: distância zero
+        if distance == 0:
+            return 0.0
+
+        # Cálculo correto da velocidade
+        return (distance * 3600) / time_diff
+    
+    # def calculate_velocity(self, time_diff, distance):
+    #     """Calcula a velocidade entre dois pontos em km/h e a distância # 
+    #     exemplo errado de velocidade retornada: 105829.79395891161
+    #     tratar a velocidade para ser um número positivo
+    #     exemplo de velocidade retornada para uma distancia de 6.0km: 
+    #     2698961.50 km/h,6.00 km"""
+    #     if time_diff <= 0 or distance < 0 and distance == 0:
+    #         return 0
+    #     # corrigindo a velocidade para ser positiva
+    #     if distance < 0:    
+    #         distance = abs(distance)
+    #     if distance == 0:
+    #         return 0
+
+    #     return  distance / (time_diff / 3600)  # km/h
+
     
     def detect_vehicle_type(self, velocity, distance, time_diff):
         """Detecta o tipo de veículo com base na velocidade, tempo e distância"""
@@ -394,7 +426,6 @@ class TowerJumpAnalyzer:
                     f.seek(0)
                 except:
                     dialect = 'excel'
-                    has_header = True
                 
                 reader = csv.DictReader(f, dialect=dialect)
                 
@@ -415,8 +446,23 @@ class TowerJumpAnalyzer:
 
                         end_time = start_time
                         
-                        lat = self.safe_float(row.get('Latitude'))
-                        lon = self.safe_float(row.get('Longitude'))
+                        unfrormated_lat = row.get('Latitude')
+
+                        if unfrormated_lat and isinstance(unfrormated_lat, str):
+                            unfrormated_lat = unfrormated_lat[:8]
+                        lat = unfrormated_lat
+
+
+                        unfrormated_lon = row.get('Longitude')
+                        # formata a string para 4 casas decimais
+                        if unfrormated_lon and isinstance(unfrormated_lon, str):
+                            # exemplo de longitude:
+                            # errado: -800558944, certo: -80036514
+                            unfrormated_lon = unfrormated_lon[:9]
+                        lon = unfrormated_lon
+
+                        lat = self.safe_float(lat)
+                        lon = self.safe_float(lon)
                         
                         # Determina o estado - prioridade para coordenadas
                         state = 'UNKNOWN'
@@ -442,7 +488,8 @@ class TowerJumpAnalyzer:
                             'resolved_by': None,
                             'location_score': 0,
                             'velocity': 0,
-                            'vehicle_type': 'UNKNOWN'
+                            'vehicle_type': 'UNKNOWN',
+                            'distance': 0,
                         }
                         
                         # entry['location_score'] = self.calculate_location_score(entry)
@@ -473,6 +520,24 @@ class TowerJumpAnalyzer:
                 print("  Ação recomendada: Verificar qualidade das coordenadas e mapeamento de estados")
         
         return data
+    
+    def format_distance(self, distance):
+        """Formata a distância em km com 2 casas decimais"""
+        try:
+            if distance is None:
+                return ''
+            return f"{distance:.2f} km" if distance >= 0 else ''
+        except (ValueError, TypeError) as e:
+            print(f"Erro ao formatar distância: {str(e)}")
+            print(distance)
+            traceback.print_exc()
+
+    
+    def format_velocity(self, velocity):
+        """Formata a velocidade em km/h com 2 casas decimais"""
+        if velocity is None:
+            return ''
+        return f"{velocity:.2f} km/h" if velocity >= 0 else ''
 
     def generate_report(self, data, output_file):
         """Gera um relatório CSV com os dados processados"""
@@ -486,8 +551,8 @@ class TowerJumpAnalyzer:
                     'start_time', 'end_time', 'state', 'confidence', 
                     'latitude', 'longitude', 'duration', 'tower_jump',
                     'same_time_diff_state', 'cell_types', 'location_score',
-                    'velocity', 'conflict_resolution', 'discarded_state', 
-                    'resolved_by', 'vehicle_type'
+                    'velocity', 'distance',  'vehicle_type', 'is_location_change_possible',
+                    'conflict_resolution', 'discarded_state', 'resolved_by', 
                 ]
                 writer = csv.DictWriter(f, fieldnames=fieldnames)
                 writer.writeheader()
@@ -505,11 +570,13 @@ class TowerJumpAnalyzer:
                         'same_time_diff_state': entry['same_time_diff_state'],
                         'cell_types': entry['cell_types'],
                         'location_score': entry['location_score'],
-                        'velocity': entry['velocity'],
+                        'velocity': self.format_velocity(entry['velocity']),
+                        'distance': self.format_distance(entry['distance']),
+                        'vehicle_type': entry['vehicle_type'] or 'UNKNOWN',
+                        'is_location_change_possible': entry.get('is_location_change_possible', False),
                         'conflict_resolution': entry['conflict_resolution'],
                         'discarded_state': entry['discarded_state'] or '',
-                        'resolved_by': entry['resolved_by'] or '',
-                        'vehicle_type': entry['vehicle_type'] or 'UNKNOWN'
+                        'resolved_by': entry['resolved_by'] or ''
                     })
             return True
         except Exception as e:
