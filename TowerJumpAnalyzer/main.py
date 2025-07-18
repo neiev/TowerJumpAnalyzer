@@ -691,7 +691,7 @@ class TowerJumpAnalyzer:
         
         return data
 
-    def generate_report(self, data, output_file):
+    # def generate_report(self, data, output_file):
         """Gera um relatório CSV com os dados processados"""
         if not data:
             print("Nenhum dado para gerar relatório")
@@ -730,6 +730,92 @@ class TowerJumpAnalyzer:
             print(f"Erro ao gerar relatório: {str(e)}")
             return False
         
+    # def print_summary(self, data):
+        """Imprime um resumo dos dados processados"""
+        if not data:
+            print("Nenhum dado para resumo")
+            return
+        
+        total_records = len(data)
+        tower_jump_count = sum(1 for e in data if e['tower_jump'])
+        unknown_state_count = sum(1 for e in data if e['state'] == 'UNKNOWN')
+        
+        print("\n=== RESUMO DOS DADOS ===")
+        print(f"Total de registros: {total_records}")
+        print(f"Registros com Tower Jump: {tower_jump_count} ({tower_jump_count/total_records:.2%})")
+        print(f"Registros com estado UNKNOWN: {unknown_state_count} ({unknown_state_count/total_records:.2%})")
+
+    def generate_report(self, data, output_file):
+        """Gera um relatório CSV com os dados processados"""
+        if not data:
+            print("Nenhum dado para gerar relatório")
+            return False
+        
+        try:
+            # Gera o relatório principal
+            with open(output_file, 'w', newline='', encoding='utf-8') as f:
+                fieldnames = [
+                    'start_time', 'end_time', 'state', 'confidence', 
+                    'latitude', 'longitude', 'duration', 'tower_jump',
+                    'same_time_diff_state', 'cell_types', 'location_score',
+                    'conflict_resolution', 'discarded_state', 'resolved_by'
+                ]
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                
+                for entry in data:
+                    writer.writerow({
+                        'start_time': entry['start_time'].strftime(self.date_format),
+                        'end_time': entry['end_time'].strftime(self.date_format),
+                        'state': entry['state'],
+                        'confidence': entry['confidence'],
+                        'latitude': entry['latitude'],
+                        'longitude': entry['longitude'],
+                        'duration': entry['duration'],
+                        'tower_jump': entry['tower_jump'],
+                        'same_time_diff_state': entry['same_time_diff_state'],
+                        'cell_types': entry['cell_types'],
+                        'location_score': entry['location_score'],
+                        'conflict_resolution': entry['conflict_resolution'],
+                        'discarded_state': entry['discarded_state'] or '',
+                        'resolved_by': entry['resolved_by'] or ''
+                    })
+            
+            # Gera um arquivo adicional com estatísticas por estado
+            stats_file = os.path.join(os.path.dirname(output_file), "StateStatistics.csv")
+            state_stats = self.calculate_state_stats(data)
+            
+            with open(stats_file, 'w', newline='', encoding='utf-8') as sf:
+                writer = csv.writer(sf)
+                writer.writerow(["State", "Count", "Percentage"])
+                for state, (count, percentage) in state_stats.items():
+                    writer.writerow([state, count, f"{percentage:.2%}"])
+            
+            return True
+        except Exception as e:
+            print(f"Erro ao gerar relatório: {str(e)}")
+            return False
+
+    def calculate_state_stats(self, data):
+        """Calcula estatísticas de distribuição por estado"""
+        if not data:
+            return {}
+        
+        state_counts = {}
+        total = len(data)
+        
+        for entry in data:
+            state = entry['state']
+            state_counts[state] = state_counts.get(state, 0) + 1
+        
+        # Ordena por contagem decrescente
+        sorted_stats = sorted(state_counts.items(), key=lambda x: x[1], reverse=True)
+        
+        # Converte para porcentagens
+        state_stats = {state: (count, count/total) for state, count in sorted_stats}
+        
+        return state_stats
+
     def print_summary(self, data):
         """Imprime um resumo dos dados processados"""
         if not data:
@@ -744,6 +830,15 @@ class TowerJumpAnalyzer:
         print(f"Total de registros: {total_records}")
         print(f"Registros com Tower Jump: {tower_jump_count} ({tower_jump_count/total_records:.2%})")
         print(f"Registros com estado UNKNOWN: {unknown_state_count} ({unknown_state_count/total_records:.2%})")
+        
+        # Adiciona estatísticas por estado
+        state_stats = self.calculate_state_stats(data)
+        if state_stats:
+            print("\nDistribuição por estado:")
+            print("{:<20} {:<10} {:<10}".format("Estado", "Contagem", "Porcentagem"))
+            print("-" * 40)
+            for state, (count, percentage) in state_stats.items():
+                print("{:<20} {:<10} {:<10.2%}".format(state, count, percentage))
 
 def main():
     print("=== Tower Jump Analyzer ===")
