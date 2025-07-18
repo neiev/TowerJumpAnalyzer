@@ -3,6 +3,7 @@ import json
 import os
 import re
 from datetime import datetime
+import traceback
 from shapely.geometry import Point, shape
 
 class TowerJumpAnalyzer:
@@ -16,44 +17,7 @@ class TowerJumpAnalyzer:
 
         self.date_format = '%m/%d/%y %H:%M'
         self.min_confidence = 0
-        self.state_pattern = re.compile(r',\s*([A-Z]{2}|[A-Za-z\s]+)$')
-        self.us_state_abbreviations = {
-            'AL': 'Alabama', 'AK': 'Alaska', 'AZ': 'Arizona', 'AR': 'Arkansas',
-            'CA': 'California', 'CO': 'Colorado', 'CT': 'Connecticut', 
-            'DE': 'Delaware', 'FL': 'Florida', 'GA': 'Georgia', 
-            'HI': 'Hawaii', 'ID': 'Idaho', 'IL': 'Illinois', 
-            'IN': 'Indiana', 'IA': 'Iowa', 'KS': 'Kansas', 
-            'KY': 'Kentucky', 'LA': 'Louisiana', 'ME': 'Maine',
-            'MD': 'Maryland', 'MA': 'Massachusetts', 
-            'MI': 'Michigan', 'MN': 'Minnesota', 
-            'MS': 'Mississippi', 'MO': 'Missouri',
-            'MT': 'Montana', 'NE': 'Nebraska', 'NV': 'Nevada',
-            'NH': 'New Hampshire', 'NJ': 'New Jersey',
-            'NM': 'New Mexico', 'NY': 'New York',
-            'NC': 'North Carolina', 'ND': 'North Dakota',
-            'OH': 'Ohio', 'OK': 'Oklahoma', 'OR': 'Oregon',
-            'PA': 'Pennsylvania', 'RI': 'Rhode Island',
-            'SC': 'South Carolina', 'SD': 'South Dakota',
-            'TN': 'Tennessee', 'TX': 'Texas', 'UT': 'Utah',
-            'VT': 'Vermont', 'VA': 'Virginia', 
-            'WA': 'Washington', 'WV': 'West Virginia',
-            'WI': 'Wisconsin', 'WY': 'Wyoming',
-            'DC': 'District of Columbia'
-        }
         
-        # Carrega os polígonos dos estados (geojson simplificado)
-        self.load_state_geometries()
-        
-        # Prioridade de tipos de célula
-        self.cell_type_priority = {
-            'macro': 1,
-            'small': 2,
-            'micro': 3,
-            'pico': 4,
-            'femto': 5,
-            'unknown': 0
-        }
-
         # Limiares para resolução de conflitos
         self.min_duration_to_override = 3  # minutos
         self.min_confidence_diff = 20  # porcentagem
@@ -79,67 +43,25 @@ class TowerJumpAnalyzer:
         score = 0
         if entry['confidence'] >= self.min_confidence:
             score += entry['confidence']
-        
-        # Adiciona pontos por tipo de célula
-        cell_type = entry['cell_types'].lower().strip()
-        if cell_type in self.cell_type_priority:
-            score += (100 - self.cell_type_priority[cell_type] * 10)
 
         # Penaliza se o estado for desconhecido
         if entry['state'] == 'UNKNOWN':
             score -= 20
 
         # Penaliza se a localização for pontual (sem coordenadas)
-        if entry['latitude'] is None or entry['longitude'] is None:
+        if entry['latitude'] is None or entry['longitude'] is None or \
+            (entry['latitude'] == 0 and entry['longitude'] == 0):
             score -= 30
 
         # Penaliza se o registro for um tower jump
         if entry.get('tower_jump', False):
             score -= 50
-        
+
         # Garante que o score não fique negativo
         score = max(score, 0)
 
         # Limita o score máximo a 100
         return min(score, 100)
-        
-    def load_state_geometries(self):
-        """Carrega os polígonos dos estados a partir de um GeoJSON simplificado"""
-        try:
-            # GeoJSON simplificado com os polígonos dos estados
-            states_geojson = {
-                "type": "FeatureCollection",
-                "features": [
-                    {
-                        "type": "Feature",
-                        "properties": {"name": "New York"},
-                        "geometry": {
-                            "type": "Polygon",
-                            "coordinates": [[[-79.8, 40.5], [-71.8, 40.5], [-71.8, 45.1], [-79.8, 45.1], [-79.8, 40.5]]]
-                        }
-                    },
-                    {
-                        "type": "Feature",
-                        "properties": {"name": "Connecticut"},
-                        "geometry": {
-                            "type": "Polygon",
-                            "coordinates": [[[-73.7, 40.9], [-71.8, 40.9], [-71.8, 42.1], [-73.7, 42.1], [-73.7, 40.9]]]
-                        }
-                    },
-                    # Adicione outros estados conforme necessário
-                ]
-            }
-            
-            self.state_geometries = {}
-            for feature in states_geojson['features']:
-                state_name = feature['properties']['name']
-                self.state_geometries[state_name] = shape(feature['geometry'])
-                
-        except Exception as e:
-            print(f"Erro ao carregar geometrias dos estados: {str(e)}")
-            self.fallback_state_detection = True
-        else:
-            self.fallback_state_detection = False
     
     def get_current_location(self, data):
         """Obtém a localização atual com base nos dados mais recentes"""
@@ -176,50 +98,12 @@ class TowerJumpAnalyzer:
             'cell_type': latest_entry.get('cell_types', '')
         }
     
-    def resolve_state_conflicts(self, data):
-        """Resolve conflitos de estado entre registros"""
-        if not data:
-            return data
-        
-        resolved_data = []
-        for i in range(len(data)):
-            current = data[i]
-            if i == 0 or current['state'] != data[i - 1]['state']:
-                resolved_data.append(current)
-                continue
-            
-            previous = data[i - 1]
-            time_diff = (current['start_time'] - previous['end_time']).total_seconds() / 60
-            
-            # Verifica se o tempo de diferença é significativo
-            if time_diff < self.min_duration_to_override:
-                # Resolve conflito com base na confiança
-                if (current['confidence'] >= self.min_confidence_absolute and 
-                    current['confidence'] > previous['confidence'] + self.min_confidence_diff):
-                    current['conflict_resolution'] = 'OVERRIDE'
-                    current['discarded_state'] = previous['state']
-                    current['resolved_by'] = 'STATE_CONFLICT_RESOLUTION'
-                else:
-                    current['conflict_resolution'] = 'NO_CONFLICT'
-                    current['discarded_state'] = None
-                    current['resolved_by'] = None
-            else:
-                current['conflict_resolution'] = 'NO_CONFLICT'
-                current['discarded_state'] = None
-                current['resolved_by'] = None
-            
-            resolved_data.append(current)
-        
-        return resolved_data
-    
-    def calculate_velocity(self, point1, point2, time_diff):
-        """Calcula a velocidade entre dois pontos em km/h"""
-        if point1 is None or point2 is None or time_diff <= 0:
+    def calculate_velocity(self, time_diff, distance):
+        """Calcula a velocidade entre dois pontos em km/h e a distância """
+        if time_diff <= 0 or distance < 0:
             return 0
-        
-        distance = point1.distance(point2) * 111  # Distância em km
-        velocity = distance / (time_diff / 3600)  # km/h
-        return velocity
+
+        return  distance / (time_diff / 3600)  # km/h
     
     def detect_vehicle_type(self, velocity, distance, time_diff):
         """Detecta o tipo de veículo com base na velocidade, tempo e distância"""
@@ -279,6 +163,75 @@ class TowerJumpAnalyzer:
         # previous['discarded_state'] = previous['state'] 
         # previous['resolved_by'] = 'TOWER_JUMP_DETECTION'
         return current
+    
+    def is_valid_record(self, record):
+        """Verifica se o registro é válido para análise"""
+        if not record:
+            return False
+        
+        if 'start_time' not in record or 'end_time' not in record:
+            return False
+        
+        if not isinstance(record['start_time'], datetime) or not isinstance(record['end_time'], datetime):
+            return False
+        
+        if record['start_time'] >= record['end_time']:
+            return False
+        
+        if 'latitude' not in record or 'longitude' not in record:
+            return False
+        
+        if record['latitude'] is None or record['longitude'] is None:
+            return False
+        
+        if record['latitude'] == 0 and record['longitude'] == 0:
+            return False
+        
+        if record['latitude'] <= -90 and record['longitude'] <= -180:
+            return False
+
+        return True
+    
+    def check_consistency(self, record, data, index):
+        """Verifica se há registros consistentes subsequentes"""
+        # Verificar próximos 3 registros
+        consistent_count = 0
+        for j in range(index + 1, min(index + 4, len(data))):
+            next_rec = data[j]
+            if not self.is_valid_record(next_rec):
+                continue
+                
+            # Verificar mesma localização e estado
+            same_location = self.haversine_distance(
+                record['lat'], record['lon'],
+                next_rec['lat'], next_rec['lon']
+            ) < 1
+            
+            same_state = record['state'] == next_rec['state']
+            
+            if same_location and same_state:
+                consistent_count += 1
+
+        # Verificar 3 registros anteriores
+        for j in range(index - 1, max(index - 4, -1), -1):
+            prev_rec = data[j]
+            if not self.is_valid_record(prev_rec):
+                continue
+                
+            # Verificar mesma localização e estado
+            same_location = self.haversine_distance(
+                record['lat'], record['lon'],
+                prev_rec['lat'], prev_rec['lon']
+            ) < 1
+            
+            same_state = record['state'] == prev_rec['state']
+            
+            if same_location:
+                consistent_count -= 2
+            if same_state:
+                consistent_count -= 2
+                
+        return consistent_count >= 2  # Pelo menos 2 registros consistentes
 
     def detect_jumps(self, data):
         """Detecta tower jumps com base nos dados de localização"""
@@ -292,10 +245,23 @@ class TowerJumpAnalyzer:
             if not current['start_time'] or not previous['start_time']:
                 continue
 
-            if current['latitude'] is None or current['longitude'] is None:
+            if not current['state'] or \
+                current['state'] == '' or \
+                current['state'] == 'UNKNOWN' or \
+                current['state'] is None:
+                # se não tem estado válido, cria um objeto padrão
+                current = self.criar_objeto_padrao(current)
                 continue
 
-            time_diff = (current['start_time'] - previous['end_time']).total_seconds()
+            if ((current['latitude'] is None or current['longitude'] is None or \
+                current['latitude'] == 0 or current['longitude'] == 0) and \
+                current['state'] == 'UNKNOWN'):
+                current = self.criar_objeto_padrao(current)
+                continue
+
+            if 'tower_jump' not in previous:
+                print(previous)
+                previous['tower_jump'] = False
 
             previous_state = previous['state']
 
@@ -313,115 +279,107 @@ class TowerJumpAnalyzer:
                 previous['longitude'] = data[i]['longitude']
                 previous['start_time'] = data[i]['start_time']
                 previous['end_time'] = data[i]['end_time']
+                previous['tower_jump'] = data[i]['tower_jump']
 
-            current_state = current['state']
-
-            if previous_state == current_state:
+            if valid_previous_state == current['state'] and \
+                current['state'] != 'UNKNOWN':
+                if previous['start_time'] == current['start_time']:
+                    current['same_time_diff_state'] = 'SAME_TIME_SAME_STATE'
+                else:
+                    current['same_time_diff_state'] = 'DIFF_TIME_SAME_STATE'
+            else:
                 if previous['start_time'] == current['start_time']:
                     current['same_time_diff_state'] = 'SAME_TIME_DIFF_STATE'
                 else:
-                    current['same_time_diff_state'] = 'DIFFERENT_TIME_DIFF_STATE'
+                    current['same_time_diff_state'] = 'DIFF_TIME_DIFF_STATE'
 
-            if previous['latitude'] is  None and previous['longitude'] is None or \
-                previous['latitude'] == 0 or previous['longitude'] == 0:
-                previous = self.criar_objeto_padrao(previous)
-                continue
-                
-            if current['latitude'] is None or current['longitude'] is None or \
-                current['latitude'] == 0 or current['longitude'] == 0:
-                current = self.criar_objeto_padrao(current)
-                continue
-
-            if current_state == 'UNKNOWN':
-                current = self.criar_objeto_padrao(current)
-                continue
+            time_diff = (current['start_time'] - previous['end_time']).total_seconds()
 
             current_point = Point(current['longitude'], current['latitude'])
             previous_point = Point(previous['longitude'], previous['latitude'])
-            
-            velocity = self.calculate_velocity(
-                previous_point,
-                current_point,
+
+            current['distance'] = previous_point.distance(current_point) * 111  # Distância em km
+
+            current['velocity'] = self.calculate_velocity(
+                current['distance'],
                 time_diff
             )
-            
-            current['vehicle_type'] = self.detect_vehicle_type(velocity, current.get('distance', 0), time_diff)
-            current['velocity'] = velocity
-            previous['velocity'] = previous.get('velocity', 0)
 
+            previous['velocity'] = previous.get('velocity', 0)
+            current['vehicle_type'] = self.detect_vehicle_type(current['velocity'], current.get('distance', 0), time_diff)
+        
             current['location_score'] = self.calculate_location_score(current)
             previous['location_score'] = self.calculate_location_score(previous)
 
-            current['same_time_diff_state'] = (current['state'] == previous['state'])
             current['duration'] = (current['start_time'] - previous['end_time']).total_seconds() / 60
 
-            distance = current_point.distance(previous_point) * 111  # Distância em km
-            current['distance'] = distance
-
-            is_velocyty_high = velocity > self.max_velocity_threshold
-
-            if is_velocyty_high:
+            # Verifica se a velocidade é muito alta
+            if current['velocity'] > self.max_velocity_threshold:
                 current['conflict_resolution'] = 'HIGH_VELOCITY'
                 current = self.marcar_tower_jump(current, valid_previous_state)
                 continue
 
-            # Distância incompatível com o tempo:
-            if current['state'] != previous['state'] and current['vehicle_type'] == 'UNKNOWN':
-                current['conflict_resolution'] = 'INCOMPATIBLE_DISTANCE'
+            is_same_state = current['state'] == previous['state']
+
+            if is_same_state and \
+                current['same_time_diff_state'] == 'SAME_TIME_SAME_STATE':
+                current['conflict_resolution'] = 'SAME_STATE_SAME_TIME'
+                if previous['tower_jump']:
+                    current = self.marcar_tower_jump(current, valid_previous_state)
+                    continue
+
+            elif is_same_state and \
+                current['same_time_diff_state'] == 'DIFF_TIME_SAME_STATE':
+                current['conflict_resolution'] = 'SAME_STATE_DIFF_TIME'
+                if previous['tower_jump'] and time_diff < self.min_time_diff_threshold:
+                    current = self.marcar_tower_jump(current, valid_previous_state)
+                    continue
+            elif not is_same_state and \
+                current['same_time_diff_state'] == 'SAME_TIME_DIFF_STATE':
+                current['conflict_resolution'] = 'DIFF_STATE_SAME_TIME'
+                # checa o estado válido para o intervalo de tempo de registro
+                is_consistent = self.check_consistency(current, data, i)    
+                if not is_consistent:
+                    current['conflict_resolution'] = 'DIFF_STATE_JUMP'
+                    current = self.marcar_tower_jump(current, valid_previous_state)
+                    continue
+
+
+            # Verifica se o deslocamento é possível
+            is_location_change_possible = False
+            # calcule com base na distância e tempo e velocidade e tipo de veículo
+            # não usa apenas o minimo e máximo e sim faz cáluclo matemático real de deslocamento
+            if current['distance'] > 0 and time_diff > 0:
+                is_location_change_possible = (current['velocity'] * (time_diff / 3600)) >= current['distance']
+            current['is_location_change_possible'] = is_location_change_possible
+
+            # Verifica se a velocidade é impossível
+            if (not is_location_change_possible):
+                current['conflict_resolution'] = 'LOCATION_CHANGE_IMPOSSIBLE'
                 current = self.marcar_tower_jump(current, valid_previous_state)
                 continue
 
-            # Lógica de detecção de tower jump
             # 1. Registros simultâneos em estados diferentes:
-            if (current['state'] != previous['state'] and 
-                current['same_time_diff_state'] and 
-                time_diff < self.min_time_diff_threshold):
+            if (not is_same_state and 
+                not current['same_time_diff_state'] == 'SAME_TIME_DIFF_STATE'):
                 current['conflict_resolution'] = 'SIMULTANEOUS_STATE_JUMP'
-                current = self.marcar_tower_jump(current, valid_previous_state)
-                continue
-
-            # 2. Sequência rápida de estados diferentes:
-            if (current['state'] != previous['state'] and 
-                current['same_time_diff_state'] and 
-                time_diff < self.max_time_diff_threshold):
-                
-                # Verifica se a velocidade é alta ou se a distância é grande
-                if (is_velocyty_high and distance > self.min_jump_distance) or \
-                    (velocity > 0 and time_diff < self.min_time_diff_threshold and distance > self.min_jump_distance):
-                    # Marca como tower jump se a velocidade for alta ou a distância for grande  
-                    current['conflict_resolution'] = 'RAPID_STATE_JUMP'
+                # checa o estado válido para o intervalo de tempo de registro
+                is_consistent = self.check_consistency(current, data, i)
+                if not is_consistent:
+                    current['conflict_resolution'] = 'DIFF_STATE_JUMP'
                     current = self.marcar_tower_jump(current, valid_previous_state)
-                    continue
-
-            # Registros intercalados de estados diferentes:
-            if (current['state'] != previous['state'] and
-                not current['same_time_diff_state']):
-                # Verifica se a velocidade é alta ou se a distância é grande
-                if (is_velocyty_high and distance > self.min_jump_distance) or \
-                    (velocity > 0 and time_diff < self.min_time_diff_threshold and distance > self.min_jump_distance):
-                    # Marca como tower jump se a velocidade for alta ou a distância for grande  
-                    current['conflict_resolution'] = 'INTERLEAVED_STATE_JUMP'
+                continue
+            # 2. Registros com estado diferente e tempo de diferença curto
+            elif (not is_same_state and 
+                  current['same_time_diff_state'] == 'DIFF_TIME_DIFF_STATE' and 
+                  time_diff < self.min_time_diff_threshold):
+                current['conflict_resolution'] = 'DIFF_STATE_SHORT_TIME'
+                # checa o estado válido para o intervalo de tempo de registro
+                is_consistent = self.check_consistency(current, data, i)
+                if not is_consistent and \
+                   not current['is_location_change_possible']:
                     current = self.marcar_tower_jump(current, valid_previous_state)
-                    continue
-
-            # Verifica se o tempo de diferença é curto e o estado é igual (N tower jumps consecutivos para o mesmo estado):
-            if current['state'] == previous['state'] and current['vehicle_type'] != 'UNKNOWN':
-                # Marca como tower jump se a velocidade for alta ou a distância for grande  
-                current['conflict_resolution'] = 'CONSECUTIVE_STATE_JUMP'
-                current = self.marcar_tower_jump(current, valid_previous_state)
                 continue
-
-            # 3. Registros simultâneos em estados diferentes:
-            if (current['state'] != previous['state'] and 
-                current['same_time_diff_state']):
-                current['conflict_resolution'] = 'SIMULTANEOUS_STATE_JUMP'
-                current = self.marcar_tower_jump(current, valid_previous_state)
-                continue
-
-            # if time_diff > self.min_time_diff_threshold and distance > self.min_jump_distance:
-            #     current['conflict_resolution'] = 'LONG_DISTANCE_JUMP'
-            #     current = self.marcar_tower_jump(current, valid_previous_state)
-            #     continue
             
         return data
 
@@ -483,7 +441,9 @@ class TowerJumpAnalyzer:
                             'conflict_resolution': 'NO_CONFLICT',
                             'discarded_state': None,
                             'resolved_by': None,
-                            'location_score': 0
+                            'location_score': 0,
+                            'velocity': 0,
+                            'vehicle_type': 'UNKNOWN'
                         }
                         
                         # entry['location_score'] = self.calculate_location_score(entry)
@@ -555,6 +515,7 @@ class TowerJumpAnalyzer:
             return True
         except Exception as e:
             print(f"Erro ao gerar relatório: {str(e)}")
+            traceback.print_exc()
             return False
         
     def print_summary(self, data):
@@ -579,7 +540,8 @@ def main():
     base_dir = os.path.dirname(os.path.abspath(__file__))
     data_dir = os.path.join(base_dir, "localization")
     input_file = os.path.join(data_dir, "CarrierData.csv")
-    output_file = os.path.join(base_dir, "TowerJumpReport.csv")
+    output_file_name = 'main_' + datetime.now().strftime("%Y%m%d-%H%M%S") + '.csv'
+    output_file = os.path.join(base_dir, output_file_name)
 
     if not os.path.exists(input_file):
         print(f"Erro: Arquivo de entrada não encontrado em {input_file}")
