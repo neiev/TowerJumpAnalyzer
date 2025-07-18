@@ -718,8 +718,8 @@ def main():
     print("Sistema avançado de análise de localização e detecção de tower jumps\n")
 
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    input_file = os.path.join(base_dir, "CarrierData.csv")
-    output_file = os.path.join(base_dir, "TowerJumpReport.csv")
+    input_file = os.path.join(base_dir, "localization", "CarrierData.csv")
+    output_file = os.path.join(base_dir, "localization", "TowerJumpReport.csv")
 
     if not os.path.exists(input_file):
         print(f"Erro: Arquivo de entrada não encontrado em {input_file}")
