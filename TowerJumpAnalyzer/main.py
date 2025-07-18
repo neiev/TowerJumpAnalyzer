@@ -102,7 +102,6 @@ class TowerJumpAnalyzer:
         """Calcula a velocidade entre dois pontos em km/h e a distância """
         if time_diff <= 0 or distance < 0:
             return 0
-
         return  distance / (time_diff / 3600)  # km/h
     
     def detect_vehicle_type(self, velocity, distance, time_diff):
