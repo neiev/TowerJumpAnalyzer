@@ -313,9 +313,7 @@ class TowerJumpAnalyzer:
                 previous['longitude'] = data[i]['longitude']
                 previous['start_time'] = data[i]['start_time']
                 previous['end_time'] = data[i]['end_time']
-                previous['page'] = data[i].get('page', '')
-                previous['item'] = data[i].get('item', '')
-            
+
             current_state = current['state']
 
             if previous_state == current_state:
@@ -529,7 +527,8 @@ class TowerJumpAnalyzer:
                     'start_time', 'end_time', 'state', 'confidence', 
                     'latitude', 'longitude', 'duration', 'tower_jump',
                     'same_time_diff_state', 'cell_types', 'location_score',
-                    'conflict_resolution', 'discarded_state', 'resolved_by'
+                    'velocity', 'conflict_resolution', 'discarded_state', 
+                    'resolved_by', 'vehicle_type'
                 ]
                 writer = csv.DictWriter(f, fieldnames=fieldnames)
                 writer.writeheader()
@@ -547,9 +546,11 @@ class TowerJumpAnalyzer:
                         'same_time_diff_state': entry['same_time_diff_state'],
                         'cell_types': entry['cell_types'],
                         'location_score': entry['location_score'],
+                        'velocity': entry['velocity'],
                         'conflict_resolution': entry['conflict_resolution'],
                         'discarded_state': entry['discarded_state'] or '',
-                        'resolved_by': entry['resolved_by'] or ''
+                        'resolved_by': entry['resolved_by'] or '',
+                        'vehicle_type': entry['vehicle_type'] or 'UNKNOWN'
                     })
             return True
         except Exception as e:
