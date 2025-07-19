@@ -1,5 +1,6 @@
 import csv
 import json
+import math
 import os
 import re
 from datetime import datetime
@@ -11,7 +12,7 @@ class TowerJumpAnalyzer:
         # Configurações principais
         self.min_time_diff_threshold = 5 * 60  # 5 minutos em segundos
         self.max_time_diff_threshold = 60 * 60  # 1 hora em segundos
-        self.max_velocity_threshold = 900  # max km/h para considerar um tower jump
+        self.max_speed_threshold = 900  # max km/h para considerar um tower jump
         self.max_jump_distance = 300  # Distância máxima para considerar um tower jump (em km)
         self.min_jump_distance = 10  # Distância mínima para considerar um tower jump (em km)
 
@@ -98,63 +99,79 @@ class TowerJumpAnalyzer:
             'cell_type': latest_entry.get('cell_types', '')
         }
     
-    def calculate_velocity(self, time_diff, distance):
-        """Calcula a velocidade entre dois pontos em km/h.
+    def calcular_distancia_e_velocidade(self, lat1_deg, lon1_deg, lat2_deg, lon2_deg, tempo_segundos):
+        """Calcula a distância em km e velocidade média em km/h entre dois pontos.
         
         Args:
-            time_diff: Diferença de tempo em segundos (deve ser positivo)
-            distance: Distância percorrida em quilômetros (deve ser não negativa)
-        
+            lat1_deg: Latitude do ponto 1 em graus
+            lon1_deg: Longitude do ponto 1 em graus
+            lat2_deg: Latitude do ponto 2 em graus
+            lon2_deg: Longitude do ponto 2 em graus
+            tempo_segundos: Tempo decorrido em segundos
+            
         Returns:
-            Velocidade em km/h (float) ou 0 em casos inválidos
+            tuple: (distância_km, velocidade_kmh)
         """
-        # Casos inválidos: tempo não positivo OU distância negativa
-        if time_diff <= 0 or distance < 0:
-            return 0.0
+        # Verificação rápida para pontos idênticos
+        if (lat1_deg, lon1_deg) == (lat2_deg, lon2_deg):
+            return 0.0, 0.0
+        
+        R = 6371  # Raio da Terra em km
+        
+        # Converter graus para radianos
+        lat1_rad = math.radians(lat1_deg)
+        lon1_rad = math.radians(lon1_deg)
+        lat2_rad = math.radians(lat2_deg)
+        lon2_rad = math.radians(lon2_deg)
 
-        # Caso especial: distância zero
-        if distance == 0:
-            return 0.0
+        # Cálculos intermediários
+        sin_lat1 = math.sin(lat1_rad)
+        cos_lat1 = math.cos(lat1_rad)
+        sin_lat2 = math.sin(lat2_rad)
+        cos_lat2 = math.cos(lat2_rad)
+        delta_lon = lon2_rad - lon1_rad
+        cos_delta_lon = math.cos(delta_lon)
 
-        # Cálculo correto da velocidade
-        return (distance * 3600) / time_diff
+        # Cálculo do ângulo central com proteção contra overflow
+        cos_angle = sin_lat1 * sin_lat2 + cos_lat1 * cos_lat2 * cos_delta_lon
+        
+        # Normalizar para o intervalo [-1, 1]
+        cos_angle = max(min(cos_angle, 1.0), -1.0)
+
+        # Calcular distância
+        d = R * math.acos(cos_angle)  # em km
+
+        # Tratar tempo zero ou negativo
+        if tempo_segundos <= 0:
+            return d, 0.0
+
+        # Calcular velocidade (km/h)
+        velocidade_kmh = (d * 3600) / tempo_segundos
+        
+        return d, velocidade_kmh
+
     
-    # def calculate_velocity(self, time_diff, distance):
-    #     """Calcula a velocidade entre dois pontos em km/h e a distância # 
-    #     exemplo errado de velocidade retornada: 105829.79395891161
-    #     tratar a velocidade para ser um número positivo
-    #     exemplo de velocidade retornada para uma distancia de 6.0km: 
-    #     2698961.50 km/h,6.00 km"""
-    #     if time_diff <= 0 or distance < 0 and distance == 0:
-    #         return 0
-    #     # corrigindo a velocidade para ser positiva
-    #     if distance < 0:    
-    #         distance = abs(distance)
-    #     if distance == 0:
-    #         return 0
-
-    #     return  distance / (time_diff / 3600)  # km/h
-
-    
-    def detect_vehicle_type(self, velocity, distance, time_diff):
+    def detect_vehicle_type(self, speed, distance, time_diff):
         """Detecta o tipo de veículo com base na velocidade, tempo e distância"""
-        if velocity <= 0:
+        if speed <= 0:
             return 'UNKNOWN'
         
         vehicle_types = {
-            'Avião': (200, 900),
+            'A Pé': (0, 7),
+            'Bicicleta': (7, 30),
             'Carro': (20, 200),
+            'Ônibus': (10, 120),
             'Barco': (5, 100),
             'Trem': (30, 300),
-            'Ônibus': (10, 120)
+            'Avião': (200, 900),
         }
         
         for vehicle, (min_speed, max_speed) in vehicle_types.items():
-            if min_speed <= velocity <= max_speed:
+            if min_speed <= speed <= max_speed:
                 if distance > 0 and time_diff > 0:
                     # Verifica se a velocidade é compatível com a distância e o tempo
                     # através do calculo de distância percorrida
-                    if (velocity * (time_diff / 3600)) >= distance:
+                    if (speed * (time_diff / 3600)) >= distance:
                         return vehicle
                     
         return 'UNKNOWN'
@@ -175,7 +192,7 @@ class TowerJumpAnalyzer:
         objeto['discarded_state'] = data.get('discarded_state', None)
         objeto['resolved_by'] = data.get('resolved_by', None)
         objeto['distance'] = data.get('distance', 0)
-        objeto['velocity'] = data.get('velocity', 0)
+        objeto['speed'] = data.get('speed', 0)
         objeto['is_location_change_possible'] = data.get('is_location_change_possible', False)
         objeto['duration'] = data.get('duration', 0)
         objeto['same_time_diff_state'] = data.get('same_time_diff_state', 'DIFFERENT_TIME_DIFF_STATE')
@@ -189,10 +206,6 @@ class TowerJumpAnalyzer:
         current['tower_jump'] = True
         current['discarded_state'] = valid_previous_state
         current['resolved_by'] = 'TOWER_JUMP_DETECTION'
-
-        # previous['tower_jump'] = True
-        # previous['discarded_state'] = previous['state'] 
-        # previous['resolved_by'] = 'TOWER_JUMP_DETECTION'
         return current
     
     def is_valid_record(self, record):
@@ -284,14 +297,12 @@ class TowerJumpAnalyzer:
                 current = self.criar_objeto_padrao(current)
                 continue
 
-            if ((current['latitude'] is None or current['longitude'] is None or \
-                current['latitude'] == 0 or current['longitude'] == 0) and \
-                current['state'] == 'UNKNOWN'):
+            if (current['latitude'] is None or current['longitude'] is None or \
+                current['latitude'] == 0 or current['longitude'] == 0):
                 current = self.criar_objeto_padrao(current)
                 continue
 
             if 'tower_jump' not in previous:
-                print(previous)
                 previous['tower_jump'] = False
 
             previous_state = previous['state']
@@ -326,18 +337,20 @@ class TowerJumpAnalyzer:
 
             time_diff = (current['start_time'] - previous['end_time']).total_seconds()
 
-            current_point = Point(current['longitude'], current['latitude'])
-            previous_point = Point(previous['longitude'], previous['latitude'])
+            # current_point = Point(current['longitude'], current['latitude'])
+            # previous_point = Point(previous['longitude'], previous['latitude'])
 
-            current['distance'] = previous_point.distance(current_point) * 111  # Distância em km
+            # current['distance'] = previous_point.distance(current_point) * 111  # Distância em km
 
-            current['velocity'] = self.calculate_velocity(
-                current['distance'],
-                time_diff
-            )
-
-            previous['velocity'] = previous.get('velocity', 0)
-            current['vehicle_type'] = self.detect_vehicle_type(current['velocity'], current.get('distance', 0), time_diff)
+            distance, speed = self.calcular_distancia_e_velocidade(current['longitude'], 
+                                                                   current['latitude'],
+                                                                   previous['longitude'], 
+                                                                   previous['latitude'], 
+                                                                   time_diff)
+            current['distance'] = distance
+            current['speed'] = speed
+            previous['speed'] = previous.get('speed', 0)
+            current['vehicle_type'] = self.detect_vehicle_type(current['speed'], current.get('distance', 0), time_diff)
         
             current['location_score'] = self.calculate_location_score(current)
             previous['location_score'] = self.calculate_location_score(previous)
@@ -345,8 +358,8 @@ class TowerJumpAnalyzer:
             current['duration'] = (current['start_time'] - previous['end_time']).total_seconds() / 60
 
             # Verifica se a velocidade é muito alta
-            if current['velocity'] > self.max_velocity_threshold:
-                current['conflict_resolution'] = 'HIGH_VELOCITY'
+            if current['speed'] > self.max_speed_threshold:
+                current['conflict_resolution'] = 'HIGH_speed'
                 current = self.marcar_tower_jump(current, valid_previous_state)
                 continue
 
@@ -381,7 +394,7 @@ class TowerJumpAnalyzer:
             # calcule com base na distância e tempo e velocidade e tipo de veículo
             # não usa apenas o minimo e máximo e sim faz cáluclo matemático real de deslocamento
             if current['distance'] > 0 and time_diff > 0:
-                is_location_change_possible = (current['velocity'] * (time_diff / 3600)) >= current['distance']
+                is_location_change_possible = (current['speed'] * (time_diff / 3600)) >= current['distance']
             current['is_location_change_possible'] = is_location_change_possible
 
             # Verifica se a velocidade é impossível
@@ -447,17 +460,12 @@ class TowerJumpAnalyzer:
                         end_time = start_time
                         
                         unfrormated_lat = row.get('Latitude')
-
                         if unfrormated_lat and isinstance(unfrormated_lat, str):
                             unfrormated_lat = unfrormated_lat[:8]
                         lat = unfrormated_lat
 
-
                         unfrormated_lon = row.get('Longitude')
-                        # formata a string para 4 casas decimais
                         if unfrormated_lon and isinstance(unfrormated_lon, str):
-                            # exemplo de longitude:
-                            # errado: -800558944, certo: -80036514
                             unfrormated_lon = unfrormated_lon[:9]
                         lon = unfrormated_lon
 
@@ -487,7 +495,7 @@ class TowerJumpAnalyzer:
                             'discarded_state': None,
                             'resolved_by': None,
                             'location_score': 0,
-                            'velocity': 0,
+                            'speed': 0,
                             'vehicle_type': 'UNKNOWN',
                             'distance': 0,
                         }
@@ -533,11 +541,11 @@ class TowerJumpAnalyzer:
             traceback.print_exc()
 
     
-    def format_velocity(self, velocity):
+    def format_speed(self, speed):
         """Formata a velocidade em km/h com 2 casas decimais"""
-        if velocity is None:
+        if speed is None:
             return ''
-        return f"{velocity:.2f} km/h" if velocity >= 0 else ''
+        return f"{speed:.2f} km/h" if speed >= 0 else ''
 
     def generate_report(self, data, output_file):
         """Gera um relatório CSV com os dados processados"""
@@ -551,7 +559,7 @@ class TowerJumpAnalyzer:
                     'start_time', 'end_time', 'state', 'confidence', 
                     'latitude', 'longitude', 'duration', 'tower_jump',
                     'same_time_diff_state', 'cell_types', 'location_score',
-                    'velocity', 'distance',  'vehicle_type', 'is_location_change_possible',
+                    'speed', 'distance',  'vehicle_type', 'is_location_change_possible',
                     'conflict_resolution', 'discarded_state', 'resolved_by', 
                 ]
                 writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -570,7 +578,7 @@ class TowerJumpAnalyzer:
                         'same_time_diff_state': entry['same_time_diff_state'],
                         'cell_types': entry['cell_types'],
                         'location_score': entry['location_score'],
-                        'velocity': self.format_velocity(entry['velocity']),
+                        'speed': self.format_speed(entry['speed']),
                         'distance': self.format_distance(entry['distance']),
                         'vehicle_type': entry['vehicle_type'] or 'UNKNOWN',
                         'is_location_change_possible': entry.get('is_location_change_possible', False),
