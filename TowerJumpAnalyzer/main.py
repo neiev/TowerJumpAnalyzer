@@ -1,5 +1,6 @@
 import csv
 import json
+import math
 import os
 import re
 from datetime import datetime
@@ -11,7 +12,7 @@ class TowerJumpAnalyzer:
         # Configurações principais
         self.min_time_diff_threshold = 5 * 60  # 5 minutos em segundos
         self.max_time_diff_threshold = 60 * 60  # 1 hora em segundos
-        self.max_velocity_threshold = 900  # max km/h para considerar um tower jump
+        self.max_speed_threshold = 900  # max km/h para considerar um tower jump
         self.max_jump_distance = 300  # Distância máxima para considerar um tower jump (em km)
         self.min_jump_distance = 10  # Distância mínima para considerar um tower jump (em km)
 
@@ -44,54 +45,31 @@ class TowerJumpAnalyzer:
         if entry['confidence'] >= self.min_confidence:
             score += entry['confidence']
 
+        # Penaliza se o estado for desconhecido
         if entry['state'] == 'UNKNOWN':
             score -= 20
-
 
         # Penaliza se a localização for pontual (sem coordenadas)
         if entry['latitude'] is None or entry['longitude'] is None or \
             (entry['latitude'] == 0 and entry['longitude'] == 0):
             score -= 30
 
+        # Penaliza se o registro for um tower jump
         if entry.get('tower_jump', False):
             score -= 50
 
         # Garante que o score não fique negativo
         score = max(score, 0)
+
+        # Limita o score máximo a 100
         return min(score, 100)
-
-        
-   
     
-    def precise_state_from_coordinates(self, lat, lon):
-        """Determina o estado usando coordenadas com fallback robusto"""
-        if lat is None or lon is None or lat == 0.0 or lon == 0.0:
-            return 'UNKNOWN'
-        
-        point = Point(lon, lat)
-        state = 'UNKNOWN'
-        
-        if not self.fallback_state_detection:
-            for state_name, geometry in self.state_geometries.items():
-                if geometry.contains(point):
-                    state = state_name
-                    break
-        
-        if state == 'UNKNOWN':
-            state = self.infer_state_from_coordinates(lat, lon)
-        
-        if state == 'UNKNOWN':
-            state = self.check_coastal_areas(lat, lon)
-        
-        return state
-
-
-
     def get_current_location(self, data):
         """Obtém a localização atual com base nos dados mais recentes"""
         if not data:
             return {'status': 'NO_DATA', 'state': 'UNKNOWN', 'coordinates': None, 'confidence': 0, 'location_quality': 0}
         
+        # Ordena por timestamp e pega o mais recente
         latest_entry = max(data, key=lambda x: x['start_time'])
         
         if latest_entry['state'] == 'UNKNOWN':
@@ -121,99 +99,113 @@ class TowerJumpAnalyzer:
             'cell_type': latest_entry.get('cell_types', '')
         }
     
-
-    def calculate_velocity(self, time_diff, distance):
-        """Calcula a velocidade entre dois pontos em km/h.
+    def calcular_distancia_e_velocidade(self, lat1_deg, lon1_deg, lat2_deg, lon2_deg, tempo_segundos):
+        """Calcula a distância em km e velocidade média em km/h entre dois pontos.
         
         Args:
-            time_diff: Diferença de tempo em segundos (deve ser positivo)
-            distance: Distância percorrida em quilômetros (deve ser não negativa)
-        
+            lat1_deg: Latitude do ponto 1 em graus
+            lon1_deg: Longitude do ponto 1 em graus
+            lat2_deg: Latitude do ponto 2 em graus
+            lon2_deg: Longitude do ponto 2 em graus
+            tempo_segundos: Tempo decorrido em segundos
+            
         Returns:
-            Velocidade em km/h (float) ou 0 em casos inválidos
+            tuple: (distância_km, velocidade_kmh)
         """
-        # Casos inválidos: tempo não positivo OU distância negativa
-        if time_diff <= 0 or distance < 0:
-            return 0.0
+        # Verificação rápida para pontos idênticos
+        if (lat1_deg, lon1_deg) == (lat2_deg, lon2_deg):
+            return 0.0, 0.0
+        
+        R = 6371  # Raio da Terra em km
+        
+        # Converter graus para radianos
+        lat1_rad = math.radians(lat1_deg)
+        lon1_rad = math.radians(lon1_deg)
+        lat2_rad = math.radians(lat2_deg)
+        lon2_rad = math.radians(lon2_deg)
 
-        # Caso especial: distância zero
-        if distance == 0:
-            return 0.0
+        # Cálculos intermediários
+        sin_lat1 = math.sin(lat1_rad)
+        cos_lat1 = math.cos(lat1_rad)
+        sin_lat2 = math.sin(lat2_rad)
+        cos_lat2 = math.cos(lat2_rad)
+        delta_lon = lon2_rad - lon1_rad
+        cos_delta_lon = math.cos(delta_lon)
 
-        # Cálculo correto da velocidade
-        return (distance * 3600) / time_diff
+        # Cálculo do ângulo central com proteção contra overflow
+        cos_angle = sin_lat1 * sin_lat2 + cos_lat1 * cos_lat2 * cos_delta_lon
+        
+        # Normalizar para o intervalo [-1, 1]
+        cos_angle = max(min(cos_angle, 1.0), -1.0)
+
+        # Calcular distância
+        d = R * math.acos(cos_angle)  # em km
+
+        # Tratar tempo zero ou negativo
+        if tempo_segundos <= 0:
+            return d, 0.0
+
+        # Calcular velocidade (km/h)
+        velocidade_kmh = (d * 3600) / tempo_segundos
+        
+        return d, velocidade_kmh
+
     
-    # def calculate_velocity(self, time_diff, distance):
-    #     """Calcula a velocidade entre dois pontos em km/h e a distância # 
-    #     exemplo errado de velocidade retornada: 105829.79395891161
-    #     tratar a velocidade para ser um número positivo
-    #     exemplo de velocidade retornada para uma distancia de 6.0km: 
-    #     2698961.50 km/h,6.00 km"""
-    #     if time_diff <= 0 or distance < 0 and distance == 0:
-    #         return 0
-    #     # corrigindo a velocidade para ser positiva
-    #     if distance < 0:    
-    #         distance = abs(distance)
-    #     if distance == 0:
-    #         return 0
-
-    #     return  distance / (time_diff / 3600)  # km/h
-
-    def detect_vehicle_type(self, velocity, distance, time_diff):
+    def detect_vehicle_type(self, speed, distance, time_diff):
         """Detecta o tipo de veículo com base na velocidade, tempo e distância"""
-        if velocity <= 0:
+        if speed <= 0:
             return 'UNKNOWN'
         
         vehicle_types = {
-            'Avião': (200, 900),
+            'A Pé': (0, 7),
+            'Bicicleta': (7, 30),
             'Carro': (20, 200),
+            'Ônibus': (10, 120),
             'Barco': (5, 100),
             'Trem': (30, 300),
-            'Ônibus': (10, 120)
+            'Avião': (200, 900),
         }
         
         for vehicle, (min_speed, max_speed) in vehicle_types.items():
-            if min_speed <= velocity <= max_speed:
-                if (velocity * (time_diff / 3600)) >= distance:
-                    return vehicle
+            if min_speed <= speed <= max_speed:
+                if distance > 0 and time_diff > 0:
+                    # Verifica se a velocidade é compatível com a distância e o tempo
+                    # através do calculo de distância percorrida
+                    if (speed * (time_diff / 3600)) >= distance:
+                        return vehicle
                     
         return 'UNKNOWN'
     
     def criar_objeto_padrao(self, data):
-        objeto = {
-            'latitude': data['latitude'],
-            'longitude': data['longitude'],
-            'start_time': data['start_time'],
-            'end_time': data['end_time'],
-            'vehicle_type': data.get('vehicle_type', 'UNKNOWN'),
-            'location_score': data.get('location_score', 0),
-            'cell_types': data.get('cell_types', ''),
-            'confidence': data.get('confidence', 0),
-            'tower_jump': data.get('tower_jump', False),
-            'conflict_resolution': data.get('conflict_resolution', 'NO_CONFLICT'),
-            'discarded_state': data.get('discarded_state', None),
-            'resolved_by': data.get('resolved_by', None),
-            'distance': data.get('distance', 0),
-            'velocity': data.get('velocity', 0),
-            'is_location_change_possible': data.get('is_location_change_possible', False),
-            'duration': data.get('duration', 0),
-            'same_time_diff_state': data.get('same_time_diff_state', 'DIFFERENT_TIME_DIFF_STATE'),
-            'state': data.get('state', 'UNKNOWN'),
-            'page': data.get('page', ''),
-            'item': data.get('item', '')
-        }
+        objeto = {}
+        
+        objeto['latitude'] = data['latitude']
+        objeto['longitude'] = data['longitude']
+        objeto['start_time'] = data['start_time']
+        objeto['end_time'] = data['end_time']
+        objeto['vehicle_type'] = data.get('vehicle_type', 'UNKNOWN')
+        objeto['location_score'] = data.get('location_score', 0)
+        objeto['cell_types'] = data.get('cell_types', '')
+        objeto['confidence'] = data.get('confidence', 0)
+        objeto['tower_jump'] = data.get('tower_jump', False)
+        objeto['conflict_resolution'] = data.get('conflict_resolution', 'NO_CONFLICT')
+        objeto['discarded_state'] = data.get('discarded_state', None)
+        objeto['resolved_by'] = data.get('resolved_by', None)
+        objeto['distance'] = data.get('distance', 0)
+        objeto['speed'] = data.get('speed', 0)
+        objeto['is_location_change_possible'] = data.get('is_location_change_possible', False)
+        objeto['duration'] = data.get('duration', 0)
+        objeto['same_time_diff_state'] = data.get('same_time_diff_state', 'DIFFERENT_TIME_DIFF_STATE')
+        objeto['state'] = data.get('state', 'UNKNOWN')
+        objeto['page'] = data.get('page', '')
+        objeto['item'] = data.get('item', '')
+        
         return objeto
 
-    def marcar_tower_jump(self, current, previous):
+    def marcar_tower_jump(self, current, valid_previous_state):
         current['tower_jump'] = True
-        current['conflict_resolution'] = 'TOWER_JUMP'
-        current['discarded_state'] = previous['state'] 
+        current['discarded_state'] = valid_previous_state
         current['resolved_by'] = 'TOWER_JUMP_DETECTION'
-
-
-        # previous['tower_jump'] = True
-        # previous['discarded_state'] = previous['state'] 
-        # previous['resolved_by'] = 'TOWER_JUMP_DETECTION'
         return current
     
     def is_valid_record(self, record):
@@ -305,20 +297,18 @@ class TowerJumpAnalyzer:
                 current = self.criar_objeto_padrao(current)
                 continue
 
-            if ((current['latitude'] is None or current['longitude'] is None or \
-                current['latitude'] == 0 or current['longitude'] == 0) and \
-                current['state'] == 'UNKNOWN'):
+            if (current['latitude'] is None or current['longitude'] is None or \
+                current['latitude'] == 0 or current['longitude'] == 0):
                 current = self.criar_objeto_padrao(current)
                 continue
 
             if 'tower_jump' not in previous:
-                print(previous)
                 previous['tower_jump'] = False
 
             previous_state = previous['state']
 
+            valid_previous_state = 'UNKNOWN'
             if previous_state == 'UNKNOWN':
-                valid_previous_state = 'UNKNOWN'
                 while i > 1 and valid_previous_state == 'UNKNOWN':
                     i -= 1
                     if data[i]['state'] and data[i]['state'] != 'UNKNOWN':
@@ -345,21 +335,22 @@ class TowerJumpAnalyzer:
                 else:
                     current['same_time_diff_state'] = 'DIFF_TIME_DIFF_STATE'
 
-
             time_diff = (current['start_time'] - previous['end_time']).total_seconds()
 
-            current_point = Point(current['longitude'], current['latitude'])
-            previous_point = Point(previous['longitude'], previous['latitude'])
+            # current_point = Point(current['longitude'], current['latitude'])
+            # previous_point = Point(previous['longitude'], previous['latitude'])
 
-            current['distance'] = previous_point.distance(current_point) * 111  # Distância em km
+            # current['distance'] = previous_point.distance(current_point) * 111  # Distância em km
 
-            current['velocity'] = self.calculate_velocity(
-                current['distance'],
-                time_diff
-            )
-
-            previous['velocity'] = previous.get('velocity', 0)
-            current['vehicle_type'] = self.detect_vehicle_type(current['velocity'], current.get('distance', 0), time_diff)
+            distance, speed = self.calcular_distancia_e_velocidade(current['longitude'], 
+                                                                   current['latitude'],
+                                                                   previous['longitude'], 
+                                                                   previous['latitude'], 
+                                                                   time_diff)
+            current['distance'] = distance
+            current['speed'] = speed
+            previous['speed'] = previous.get('speed', 0)
+            current['vehicle_type'] = self.detect_vehicle_type(current['speed'], current.get('distance', 0), time_diff)
         
             current['location_score'] = self.calculate_location_score(current)
             previous['location_score'] = self.calculate_location_score(previous)
@@ -367,9 +358,9 @@ class TowerJumpAnalyzer:
             current['duration'] = (current['start_time'] - previous['end_time']).total_seconds() / 60
 
             # Verifica se a velocidade é muito alta
-            if current['velocity'] > self.max_velocity_threshold:
-                current['conflict_resolution'] = 'HIGH_VELOCITY'
-                self.marcar_tower_jump(current, previous)
+            if current['speed'] > self.max_speed_threshold:
+                current['conflict_resolution'] = 'HIGH_speed'
+                current = self.marcar_tower_jump(current, valid_previous_state)
                 continue
 
             is_same_state = current['state'] == previous['state']
@@ -403,7 +394,7 @@ class TowerJumpAnalyzer:
             # calcule com base na distância e tempo e velocidade e tipo de veículo
             # não usa apenas o minimo e máximo e sim faz cáluclo matemático real de deslocamento
             if current['distance'] > 0 and time_diff > 0:
-                is_location_change_possible = (current['velocity'] * (time_diff / 3600)) >= current['distance']
+                is_location_change_possible = (current['speed'] * (time_diff / 3600)) >= current['distance']
             current['is_location_change_possible'] = is_location_change_possible
 
             # Verifica se a velocidade é impossível
@@ -434,94 +425,6 @@ class TowerJumpAnalyzer:
                     current = self.marcar_tower_jump(current, valid_previous_state)
                 continue
             
-        return data
-
-    def infer_state_from_coordinates(self, lat, lon):
-        """Infere o estado com base nas coordenadas usando bounding boxes"""
-        if lat is None or lon is None:
-            return 'UNKNOWN'
-        
-        state_bounds = {
-            'New York': {'lat': (40.5, 45.1), 'lon': (-79.8, -71.8)},
-            'Connecticut': {'lat': (40.9, 42.1), 'lon': (-73.7, -71.8)},
-            'New Jersey': {'lat': (38.9, 41.4), 'lon': (-75.6, -73.9)},
-            'Pennsylvania': {'lat': (39.7, 42.3), 'lon': (-80.5, -74.7)},
-            'Massachusetts': {'lat': (41.2, 42.9), 'lon': (-73.5, -69.9)},
-            'Rhode Island': {'lat': (41.1, 42.0), 'lon': (-71.9, -71.1)},
-        }
-        
-        candidate_states = []
-        
-        for state, bounds in state_bounds.items():
-            if (bounds['lat'][0] <= lat <= bounds['lat'][1] and 
-                bounds['lon'][0] <= lon <= bounds['lon'][1]):
-                candidate_states.append(state)
-        
-        if len(candidate_states) == 1:
-            return candidate_states[0]
-        
-        if len(candidate_states) > 1:
-            small_states = {'Connecticut', 'Rhode Island', 'New Jersey'}
-            for state in candidate_states:
-                if state in small_states:
-                    return state
-            
-            return self.resolve_border_conflict(lat, lon, candidate_states)
-        
-        return 'UNKNOWN'
-    
-    def resolve_border_conflict(self, lat, lon, candidate_states):
-        """Resolve conflitos em áreas de fronteira entre estados"""
-        state_reference_points = {
-            'New York': (40.7, -74.0),
-            'Connecticut': (41.6, -72.7),
-            'New Jersey': (40.2, -74.7),
-            'Pennsylvania': (40.3, -76.9),
-            'Massachusetts': (42.4, -71.1),
-            'Rhode Island': (41.8, -71.4),
-        }
-        
-        distances = {}
-        for state in candidate_states:
-            if state in state_reference_points:
-                ref_lat, ref_lon = state_reference_points[state]
-                distance = ((lat - ref_lat)**2 + (lon - ref_lon)**2)**0.5
-                distances[state] = distance
-        
-        if distances:
-            return min(distances.items(), key=lambda x: x[1])[0]
-        
-        return candidate_states[0] if candidate_states else 'UNKNOWN'
-
-    def fix_consecutive_unknowns(self, data):
-        """Corrige sequências de estados UNKNOWN com base nos vizinhos conhecidos"""
-        if not data:
-            return data
-        
-        for i in range(len(data)):
-            if data[i]['state'] == 'UNKNOWN':
-                next_known = None
-                for j in range(i+1, len(data)):
-                    if data[j]['state'] != 'UNKNOWN':
-                        next_known = data[j]['state']
-                        break
-                
-                prev_known = None
-                for j in range(i-1, -1, -1):
-                    if data[j]['state'] != 'UNKNOWN':
-                        prev_known = data[j]['state']
-                        break
-                
-                if prev_known and next_known and prev_known == next_known:
-                    data[i]['state'] = prev_known
-                    data[i]['resolved_by'] = 'CONSECUTIVE_UNKNOWN_FIX'
-                elif prev_known:
-                    data[i]['state'] = prev_known
-                    data[i]['resolved_by'] = 'PREVIOUS_KNOWN_FIX'
-                elif next_known:
-                    data[i]['state'] = next_known
-                    data[i]['resolved_by'] = 'NEXT_KNOWN_FIX'
-        
         return data
 
     def load_data(self, file_path):
@@ -557,48 +460,30 @@ class TowerJumpAnalyzer:
                         end_time = start_time
                         
                         unfrormated_lat = row.get('Latitude')
-
                         if unfrormated_lat and isinstance(unfrormated_lat, str):
                             unfrormated_lat = unfrormated_lat[:8]
                         lat = unfrormated_lat
 
-
                         unfrormated_lon = row.get('Longitude')
-                        # formata a string para 4 casas decimais
                         if unfrormated_lon and isinstance(unfrormated_lon, str):
-                            # exemplo de longitude:
-                            # errado: -800558944, certo: -80036514
                             unfrormated_lon = unfrormated_lon[:9]
                         lon = unfrormated_lon
 
                         lat = self.safe_float(lat)
                         lon = self.safe_float(lon)
                         
-                        state = self.precise_state_from_coordinates(lat, lon)
+                        # Determina o estado - prioridade para coordenadas
+                        state = 'UNKNOWN'
                         
-                        if state == 'UNKNOWN':
-                            location_text = ' '.join([
-                                str(row.get('City', '')),
-                                str(row.get('County', '')),
-                                str(row.get('State', ''))
-                            ]).strip()
-                            state = self.extract_state(location_text)
+                        if lat is not None and lon is not None:
+                            state = row.get('State', '')
                         
-                        if state == 'UNKNOWN' and 'State' in row:
-                            state_candidate = row['State'].strip().title()
-                            if state_candidate in self.us_state_abbreviations.values():
-                                state = state_candidate
-                            elif len(state_candidate) == 2:
-                                state = self.us_state_abbreviations.get(state_candidate.upper(), 'UNKNOWN')
-                        
-                        if state == 'UNKNOWN' and lat is not None and lon is not None:
-                            state = self.infer_state_from_coordinates(lat, lon)
-                        
+                        # Cria a entrada de dados
                         entry = {
                             'start_time': start_time,
                             'end_time': end_time,
                             'state': state,
-                            'confidence': 100,
+                            'confidence': 100,  # Assume alta confiança para dados com coordenadas
                             'latitude': lat,
                             'longitude': lon,
                             'duration': 0,
@@ -610,12 +495,12 @@ class TowerJumpAnalyzer:
                             'discarded_state': None,
                             'resolved_by': None,
                             'location_score': 0,
-                            'velocity': 0,
+                            'speed': 0,
                             'vehicle_type': 'UNKNOWN',
                             'distance': 0,
                         }
                         
-                        entry['location_score'] = self.calculate_location_score(entry)
+                        # entry['location_score'] = self.calculate_location_score(entry)
                         data.append(entry)
                         
                     except Exception as e:
@@ -656,65 +541,11 @@ class TowerJumpAnalyzer:
             traceback.print_exc()
 
     
-    def format_velocity(self, velocity):
+    def format_speed(self, speed):
         """Formata a velocidade em km/h com 2 casas decimais"""
-        if velocity is None:
+        if speed is None:
             return ''
-        return f"{velocity:.2f} km/h" if velocity >= 0 else ''
-
-    # def generate_report(self, data, output_file):
-        """Gera um relatório CSV com os dados processados"""
-        if not data:
-            print("Nenhum dado para gerar relatório")
-            return False
-        
-        try:
-            with open(output_file, 'w', newline='', encoding='utf-8') as f:
-                fieldnames = [
-                    'start_time', 'end_time', 'state', 'confidence', 
-                    'latitude', 'longitude', 'duration', 'tower_jump',
-                    'same_time_diff_state', 'cell_types', 'location_score',
-                    'conflict_resolution', 'discarded_state', 'resolved_by'
-                ]
-                writer = csv.DictWriter(f, fieldnames=fieldnames)
-                writer.writeheader()
-                
-                for entry in data:
-                    writer.writerow({
-                        'start_time': entry['start_time'].strftime(self.date_format),
-                        'end_time': entry['end_time'].strftime(self.date_format),
-                        'state': entry['state'],
-                        'confidence': entry['confidence'],
-                        'latitude': entry['latitude'],
-                        'longitude': entry['longitude'],
-                        'duration': entry['duration'],
-                        'tower_jump': entry['tower_jump'],
-                        'same_time_diff_state': entry['same_time_diff_state'],
-                        'cell_types': entry['cell_types'],
-                        'location_score': entry['location_score'],
-                        'conflict_resolution': entry['conflict_resolution'],
-                        'discarded_state': entry['discarded_state'] or '',
-                        'resolved_by': entry['resolved_by'] or ''
-                    })
-            return True
-        except Exception as e:
-            print(f"Erro ao gerar relatório: {str(e)}")
-            return False
-        
-    # def print_summary(self, data):
-        """Imprime um resumo dos dados processados"""
-        if not data:
-            print("Nenhum dado para resumo")
-            return
-        
-        total_records = len(data)
-        tower_jump_count = sum(1 for e in data if e['tower_jump'])
-        unknown_state_count = sum(1 for e in data if e['state'] == 'UNKNOWN')
-        
-        print("\n=== RESUMO DOS DADOS ===")
-        print(f"Total de registros: {total_records}")
-        print(f"Registros com Tower Jump: {tower_jump_count} ({tower_jump_count/total_records:.2%})")
-        print(f"Registros com estado UNKNOWN: {unknown_state_count} ({unknown_state_count/total_records:.2%})")
+        return f"{speed:.2f} km/h" if speed >= 0 else ''
 
     def generate_report(self, data, output_file):
         """Gera um relatório CSV com os dados processados"""
@@ -723,13 +554,12 @@ class TowerJumpAnalyzer:
             return False
         
         try:
-            # Gera o relatório principal
             with open(output_file, 'w', newline='', encoding='utf-8') as f:
                 fieldnames = [
                     'start_time', 'end_time', 'state', 'confidence', 
                     'latitude', 'longitude', 'duration', 'tower_jump',
                     'same_time_diff_state', 'cell_types', 'location_score',
-                    'velocity', 'distance',  'vehicle_type', 'is_location_change_possible',
+                    'speed', 'distance',  'vehicle_type', 'is_location_change_possible',
                     'conflict_resolution', 'discarded_state', 'resolved_by', 
                 ]
                 writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -748,7 +578,7 @@ class TowerJumpAnalyzer:
                         'same_time_diff_state': entry['same_time_diff_state'],
                         'cell_types': entry['cell_types'],
                         'location_score': entry['location_score'],
-                        'velocity': self.format_velocity(entry['velocity']),
+                        'speed': self.format_speed(entry['speed']),
                         'distance': self.format_distance(entry['distance']),
                         'vehicle_type': entry['vehicle_type'] or 'UNKNOWN',
                         'is_location_change_possible': entry.get('is_location_change_possible', False),
@@ -756,43 +586,12 @@ class TowerJumpAnalyzer:
                         'discarded_state': entry['discarded_state'] or '',
                         'resolved_by': entry['resolved_by'] or ''
                     })
-            
-            # Gera um arquivo adicional com estatísticas por estado
-            stats_file = os.path.join(os.path.dirname(output_file), "StateStatistics.csv")
-            state_stats = self.calculate_state_stats(data)
-            
-            with open(stats_file, 'w', newline='', encoding='utf-8') as sf:
-                writer = csv.writer(sf)
-                writer.writerow(["State", "Count", "Percentage"])
-                for state, (count, percentage) in state_stats.items():
-                    writer.writerow([state, count, f"{percentage:.2%}"])
-            
             return True
         except Exception as e:
             print(f"Erro ao gerar relatório: {str(e)}")
             traceback.print_exc()
             return False
-
-    def calculate_state_stats(self, data):
-        """Calcula estatísticas de distribuição por estado"""
-        if not data:
-            return {}
         
-        state_counts = {}
-        total = len(data)
-        
-        for entry in data:
-            state = entry['state']
-            state_counts[state] = state_counts.get(state, 0) + 1
-        
-        # Ordena por contagem decrescente
-        sorted_stats = sorted(state_counts.items(), key=lambda x: x[1], reverse=True)
-        
-        # Converte para porcentagens
-        state_stats = {state: (count, count/total) for state, count in sorted_stats}
-        
-        return state_stats
-
     def print_summary(self, data):
         """Imprime um resumo dos dados processados"""
         if not data:
@@ -807,15 +606,6 @@ class TowerJumpAnalyzer:
         print(f"Total de registros: {total_records}")
         print(f"Registros com Tower Jump: {tower_jump_count} ({tower_jump_count/total_records:.2%})")
         print(f"Registros com estado UNKNOWN: {unknown_state_count} ({unknown_state_count/total_records:.2%})")
-        
-        # Adiciona estatísticas por estado
-        state_stats = self.calculate_state_stats(data)
-        if state_stats:
-            print("\nDistribuição por estado:")
-            print("{:<20} {:<10} {:<10}".format("Estado", "Contagem", "Porcentagem"))
-            print("-" * 40)
-            for state, (count, percentage) in state_stats.items():
-                print("{:<20} {:<10} {:<10.2%}".format(state, count, percentage))
 
 def main():
     print("=== Tower Jump Analyzer ===")
@@ -826,7 +616,6 @@ def main():
     input_file = os.path.join(data_dir, "CarrierData.csv")
     output_file_name = 'main_' + datetime.now().strftime("%Y%m%d-%H%M%S") + '.csv'
     output_file = os.path.join(base_dir, output_file_name)
-
 
     if not os.path.exists(input_file):
         print(f"Erro: Arquivo de entrada não encontrado em {input_file}")
@@ -841,17 +630,14 @@ def main():
         print("Nenhum dado válido encontrado no arquivo de entrada.")
         return
 
-    print("Corrigindo estados UNKNOWN consecutivos...")
-    data = analyzer.fix_consecutive_unknowns(data)
-
     print("Detectando tower jumps...")
     data = analyzer.detect_jumps(data)
 
-    print("Resolvendo conflitos de estado...")
-    data = analyzer.resolve_state_conflicts(data)
+    # print("Resolvendo conflitos de estado...")
+    # data = analyzer.resolve_state_conflicts(data)
 
-    print("Obtendo localização atual...")
-    current_location = analyzer.get_current_location(data)
+    # print("Obtendo localização atual...")
+    # current_location = analyzer.get_current_location(data)
 
     print("Gerando relatório...")
     if analyzer.generate_report(data, output_file):
@@ -861,21 +647,6 @@ def main():
         return
 
     analyzer.print_summary(data)
-
-    print("\n=== LOCALIZAÇÃO ATUAL ===")
-    if current_location['status'] == 'NO_DATA':
-        print("Sem dados de localização")
-    elif current_location['status'] == 'NO_VALID_DATA':
-        print("Sem dados válidos de localização (todos descartados em conflitos)")
-    else:
-        print(f"Estado: {current_location['state']}")
-        print(f"Status: {'Atual' if current_location['status'] == 'CURRENT' else 'Possivelmente desatualizada'}")
-        print(f"Qualidade: {current_location['location_quality']} (Score: {current_location['location_score']}/100)")
-        print(f"Última atualização: {current_location['last_update']} ({current_location['minutes_since_update']:.1f} minutos atrás)")
-        print(f"Confiança: {current_location['confidence']}%")
-        print(f"Tower Jump: {'Sim' if current_location['tower_jump'] else 'Não'}")
-        print(f"Coordenadas: {current_location['coordinates']}")
-        print(f"Tipo de célula: {current_location['cell_type'] or 'Desconhecido'}")
 
 if __name__ == "__main__":
     main()
