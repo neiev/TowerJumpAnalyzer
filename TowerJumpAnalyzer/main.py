@@ -1,4 +1,5 @@
 # 
+from typing import Optional
 import pandas as pd
 import numpy as np
 import csv
@@ -35,116 +36,27 @@ class TowerJumpAnalyzer:
         except (ValueError, TypeError):
             return 0
 
-    def calculate_distance(self, lat1, lon1, lat2, lon2):
-        """Calcula a distância em km entre dois pontos geográficos usando a fórmula de Haversine"""
-        if None in (lat1, lon1, lat2, lon2):
-            return 0
-            
-        # Converte coordenadas para radianos
-        lat1, lon1, lat2, lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
-        
-        # Fórmula de Haversine
-        dlon = lon2 - lon1
-        dlat = lat2 - lat1
-        a = math.sin(dlat/2)**2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon/2)**2
-        c = 2 * math.asin(math.sqrt(a))
-        r = 6371  # Raio da Terra em quilômetros
-        return c * r
-
-    def check_consistency(self, record, data, index):
-        """Verifica se há registros consistentes subsequentes"""
-        # Verificar próximos 3 registros
-        consistent_count = 0
-        for j in range(index + 1, min(index + 4, len(data))):
-            next_rec = data[j]
-            if not self.is_valid_record(next_rec):
-                continue
-
-            # Verificar mesma localização e estado
-            same_location = self.haversine_distance(
-                record['lat'], record['lon'],
-                next_rec['lat'], next_rec['lon']
-            ) < 1
-
-            same_state = record['state'] == next_rec['state']
-
-            if same_location and same_state:
-                consistent_count += 1
-
-        # Verificar 3 registros anteriores
-        for j in range(index - 1, max(index - 4, -1), -1):
-            prev_rec = data[j]
-            if not self.is_valid_record(prev_rec):
-                continue
-
-            # Verificar mesma localização e estado
-            same_location = self.haversine_distance(
-                record['lat'], record['lon'],
-                prev_rec['lat'], prev_rec['lon']
-            ) < 1
-
-            same_state = record['state'] == prev_rec['state']
-
-            if same_location:
-                consistent_count -= 2
-            if same_state:
-                consistent_count -= 2
-
-        return consistent_count >= 2  # Pelo menos 2 registros consistentes
-
-    def haversine_distance(self, lat1, lon1, lat2, lon2):
+    def haversine_distance_vectorized(self, lon1, lat1, lon2, lat2):
         """
-        Calcula a distância entre dois pontos na Terra usando a fórmula de Haversine.
-        
-        Args:
-            lat1, lon1: Latitude e longitude do primeiro ponto (em graus)
-            lat2, lon2: Latitude e longitude do segundo ponto (em graus)
-            
-        Returns:
-            float: Distância em quilômetros entre os dois pontos
+        Calcula a distância entre dois pares de coordenadas (em vetores) usando a fórmula de Haversine.
+        Entradas e saídas em quilômetros.
         """
-        # Converte graus para radianos
-        lat1, lon1, lat2, lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
-        
-        # Fórmula de Haversine
-        dlat = lat2 - lat1
-        dlon = lon2 - lon1
-        a = math.sin(dlat/2)**2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon/2)**2
-        c = 2 * math.asin(math.sqrt(a))
-        r = 6371  # Raio da Terra em quilômetros
-        
-        # Retorna a distância em quilômetros
-        return c * r
 
-    # def detect_vehicle_type(self, speed, distance, time_diff):
-    #     """
-    #     Detecta o tipo provável de veículo com base na velocidade de deslocamento.
-        
-    #     Args:
-    #         speed: Velocidade média em km/h
-    #         distance: Distância percorrida em km
-    #         time_diff: Diferença de tempo em segundos
-            
-    #     Returns:
-    #         str: Tipo de veículo provável (AIRPLANE, CAR, TRAIN, WALKING, STATIONARY)
-    #     """
-    #     # Se a distância ou tempo for zero, não há movimento
-    #     if distance < 0.1 or time_diff < 60:
-    #         return "STATIONARY"
-        
-    #     # Classifica o tipo de veículo com base na velocidade
-    #     if speed > 400:
-    #         return "AIRPLANE"
-    #     elif speed > 180:
-    #         return "HIGH_SPEED_TRAIN"
-    #     elif speed > 80:
-    #         return "TRAIN"
-    #     elif speed > 5:
-    #         return "CAR"
-    #     elif speed > 0.5:
-    #         return "WALKING"
-    #     else:
-    #         return "UNKNOWN"
+        # Converter graus para radianos
+        lon1_rad = np.radians(lon1)
+        lat1_rad = np.radians(lat1)
+        lon2_rad = np.radians(lon2)
+        lat2_rad = np.radians(lat2)
+
+        dlon = lon2_rad - lon1_rad
+        dlat = lat2_rad - lat1_rad
+
+        a = np.sin(dlat / 2.0) ** 2 + np.cos(lat1_rad) * np.cos(lat2_rad) * np.sin(dlon / 2.0) ** 2
+        c = 2 * np.arcsin(np.sqrt(a))
+
+        R = 6371  # Raio da Terra em quilômetros
+        return R * c
+
         
     def is_valid_record(self, record):
         """Verifica se o registro é válido para análise"""
@@ -159,8 +71,8 @@ class TowerJumpAnalyzer:
             if not isinstance(record['start_time'], datetime) or not isinstance(record['end_time'], datetime):
                 return False
 
-            # if 'latitude' not in record or 'longitude' not in record:
-            #     return False
+            if record['state'] == 'UNKNOWN':
+                return False
 
             if record['latitude'] is None or record['longitude'] is None:
                 return False
@@ -179,190 +91,169 @@ class TowerJumpAnalyzer:
             traceback.print_exc()
             return False
 
-    def calcular_distancia_e_velocidade(self, df):
-        # Preparar dados deslocados
-        df_shift = df.shift(1)
-        valid_mask = (~df_shift['latitude'].isna()) & (~df_shift['longitude'].isna())
-        
-        # Calcular diferença de tempo
-        time_diff = (df['start_time'] - df_shift['end_time']).dt.total_seconds()
-        
-        # Calcular distância
-        distance = np.zeros(len(df))
-        distance[1:] = self.haversine_distance(
-            df_shift['longitude'].values[1:],
-            df_shift['latitude'].values[1:],
-            df['longitude'].values[1:],
-            df['latitude'].values[1:]
-        )
-        
-        # Calcular velocidade
-        speed = np.zeros(len(df))
-        valid_time = time_diff > 0
-        speed[1:][valid_time[1:]] = (distance[1:][valid_time[1:]] * 3600) / time_diff[1:][valid_time[1:]]
-        
-        return distance, speed
 
-    def detect_vehicle_type(self, speed, distance, time_diff):
-        # if distance == 0:
-        # #     return 'UNKNOWN'
-        
-        vehicle_types = {
-            'Andando': (0, 7),
-            'Bicicleta': (7, 30),
-            'Carro': (20, 200),
-            'Ônibus': (10, 120),
-            'Barco': (5, 100),
-            'Trem': (30, 300),
-            'Avião': (200, 900),
-        }
-        
-        for vehicle, (min_speed, max_speed) in vehicle_types.items():
-            if min_speed <= speed <= max_speed:
-                if time_diff > 60 and (speed * (time_diff / 3600)) >= distance:
-                    return vehicle
-                    
-        return 'UNKNOWN'
+    def detect_vehicle_type_vectorized(df):
+        """
+        Adiciona a coluna 'vehicle_type' ao DataFrame com base em condições vetorizadas
+        usando speed, distance e time_diff (em segundos).
+        """
 
+        # Converte tempo de segundos para horas
+        df['time_hours'] = df['time_diff_seconds'] / 3600
+        df['effective_distance'] = df['speed'] * df['time_hours']
+
+        conditions = [
+            (df['speed'].between(0, 7)) & (df['time_diff_seconds'] > 60) & (df['effective_distance'] >= df['distance']),
+            (df['speed'].between(7, 30)) & (df['time_diff_seconds'] > 60) & (df['effective_distance'] >= df['distance']),
+            (df['speed'].between(20, 200)) & (df['time_diff_seconds'] > 60) & (df['effective_distance'] >= df['distance']),
+            (df['speed'].between(10, 120)) & (df['time_diff_seconds'] > 60) & (df['effective_distance'] >= df['distance']),
+            (df['speed'].between(5, 100)) & (df['time_diff_seconds'] > 60) & (df['effective_distance'] >= df['distance']),
+            (df['speed'].between(30, 300)) & (df['time_diff_seconds'] > 60) & (df['effective_distance'] >= df['distance']),
+            (df['speed'].between(200, 900)) & (df['time_diff_seconds'] > 60) & (df['effective_distance'] >= df['distance']),
+        ]
+
+        choices = ['Andando', 'Bicicleta', 'Carro', 'Ônibus', 'Barco', 'Trem', 'Avião']
+
+        df['vehicle_type'] = np.select(conditions, choices, default='UNKNOWN')
+
+        return df
 
     def detect_jumps(self, df):
         if df.empty:
             return df
 
-        # Pré-processamento: criar colunas de estado válido
-        valid_mask = (df['state'] != 'UNKNOWN') & \
-                    (~df['latitude'].isna()) & \
-                    (~df['longitude'].isna()) & \
-                    (df['latitude'] != 0) & \
-                    (df['longitude'] != 0)
-        
-        # Identificar mudanças de estado
-        prev_state = df['state'].shift(1).fillna('UNKNOWN')
-        same_time = df['start_time'] == df['start_time'].shift(1)
-        same_state = df['state'] == prev_state
-        state_unknown = df['state'] == 'UNKNOWN'
-        prev_unknown = df['state'].shift(1) == 'UNKNOWN'
-        
-        conditions = [~same_state & same_time & ~state_unknown & ~prev_unknown]
-        choices = [
-            True
-        ]
-        df['same_time_diff_state'] = np.select(conditions, choices, default='')
-                
-        # Inicializar colunas de resultados
+        MAX_TIME_DIFF = 3600  # 1h em segundos
+
+        # ---------------------------------------------
+        # 1. Estado válido
+        # ---------------------------------------------
+        df['is_state_valid'] = (
+            (df['state'] != 'UNKNOWN') &
+            df['latitude'].notna() & (df['latitude'] != 0) &
+            df['longitude'].notna() & (df['longitude'] != 0)
+        )
+
+        # Crie uma coluna auxiliar com o estado apenas se for válido
+        df['valid_state'] = df['state'].where(df['is_state_valid'])
+
+        # Inicializa vetor vazio
+        previous_different = [None] * len(df)
+
+        last_valid_state = None
+        for i in range(len(df)):
+            current_state = df.loc[i, 'state']
+            if pd.notna(df.loc[i, 'valid_state']):
+                if last_valid_state is not None and last_valid_state != current_state:
+                    previous_different[i] = last_valid_state
+                last_valid_state = df.loc[i, 'valid_state']
+            else:
+                previous_different[i] = last_valid_state if last_valid_state != current_state else None
+
+        df['previous_valid_different_state'] = previous_different
+
+        next_different = [None] * len(df)
+
+        next_valid_state = None
+        for i in reversed(range(len(df))):
+            current_state = df.loc[i, 'state']
+            if pd.notna(df.loc[i, 'valid_state']):
+                if next_valid_state is not None and next_valid_state != current_state:
+                    next_different[i] = next_valid_state
+                next_valid_state = df.loc[i, 'valid_state']
+            else:
+                next_different[i] = next_valid_state if next_valid_state != current_state else None
+
+        df['next_valid_different_state'] = next_different
+
+        # ---------------------------------------------
+        # 2. Colunas de tempo e comparação
+        # ---------------------------------------------
+        df['prev_state'] = df['state'].shift(1).fillna('UNKNOWN')
+        df['prev_end_time'] = df['end_time'].shift(1)
+        df['prev_lat'] = df['latitude'].shift(1)
+        df['prev_lon'] = df['longitude'].shift(1)
+        df['prev_is_valid'] = df['is_state_valid'].shift(1).fillna(False)
+
+        df['time_diff'] = (df['start_time'] - df['prev_end_time']).dt.total_seconds()
+        df['state_changed'] = df['state'] != df['prev_state']
+        df['valid_state_change'] = df['state_changed'] & df['is_state_valid'] & df['prev_is_valid']
+        df['valid_state_change_1h'] = df['valid_state_change'] & (df['time_diff'] <= MAX_TIME_DIFF)
+
+        # ---------------------------------------------
+        # 3. Cálculo vetorizado de distância e velocidade
+        # ---------------------------------------------
+        valid_movement_mask = df['is_state_valid'] & df['prev_is_valid'] & (df['time_diff'] > 0)
+
+        df['distance'] = 0.0
+        df['speed'] = 0.0
+        df['duration'] = df['time_diff']
+        df.loc[valid_movement_mask, 'distance'] = self.haversine_distance_vectorized(
+            df.loc[valid_movement_mask, 'prev_lon'],
+            df.loc[valid_movement_mask, 'prev_lat'],
+            df.loc[valid_movement_mask, 'longitude'],
+            df.loc[valid_movement_mask, 'latitude']
+        )
+        df.loc[valid_movement_mask, 'speed'] = (
+            df.loc[valid_movement_mask, 'distance'] * 3600 / df.loc[valid_movement_mask, 'time_diff']
+        )
+
+        df['is_movement_possible'] = (
+            (df['distance'] > 0) &
+            (df['speed'] > 0) &
+            ((df['speed'] * (df['time_diff'] / 3600)) >= df['distance'])
+        )
+
+        # ---------------------------------------------
+        # 4. Inicializar colunas auxiliares
+        # ---------------------------------------------
         df['tower_jump'] = False
         df['conflict_resolution'] = 'NO_CONFLICT'
         df['discarded_state'] = None
         df['resolved_by'] = None
-        df['prev_valid_index'] = None
-        df['next_valid_index'] = None
-        df['prev_valid_state'] = None
-        df['next_valid_state'] = None
-        df['is_movement_possible'] = False
+        df['older_state'] = None
+        df['older_state_index'] = None
 
-        # Para cada registro, encontrar estados válidos anterior e posterior
-        for i in range(len(df)):
-            current = df.iloc[i]
-            
-            # Ignorar registros inválidos
-            if not self.is_valid_record(current):
-                continue
-                
-            # Buscar estado válido anterior diferente deste
-            prev_index = i - 1
-            while prev_index >= 0:
-                prev_rec = df.iloc[prev_index]
-                if self.is_valid_record(prev_rec) and \
-                   prev_rec['state'] != 'UNKNOWN' and \
-                   prev_rec['state'] != current['state']:
+        # ---------------------------------------------
+        # 5. Loop apenas onde há mudança válida de estado
+        # ---------------------------------------------
+        candidates = df[df['valid_state_change_1h'] & (~df['is_movement_possible'])]
+
+        for i in candidates.index:
+            row = df.loc[i]
+            base_state = row['prev_state']
+            current_time = row['start_time']
+
+            # Busca de estado histórico diferente (até 1h antes)
+            older_idx = None
+            for j in range(i - 1, max(i - 1000, -1), -1):
+                candidate = df.loc[j]
+                if not candidate['is_state_valid']:
+                    continue
+                if abs((candidate['start_time'] - current_time).total_seconds()) > MAX_TIME_DIFF:
                     break
-                prev_index -= 1
-                
-            # Buscar estado válido posterior diferente do atual
-            next_index = i + 1
-            while next_index < len(df):
-                next_rec = df.iloc[next_index]
-                if self.is_valid_record(next_rec) and \
-                   next_rec['state'] != 'UNKNOWN' and \
-                   next_rec['state'] != current['state']:
+                if candidate['state'] != base_state:
+                    older_idx = j
                     break
-                next_index += 1
-                
-            # Atualizar DataFrame com índices encontrados
-            df.at[i, 'prev_valid_index'] = prev_index if prev_index >= 0 else None
-            df.at[i, 'next_valid_index'] = next_index if next_index < len(df) else None
-            
-            # Processar apenas se encontrou estado válido anterior
-            if prev_index >= 0:
-                prev_rec = df.iloc[prev_index]
-                df.at[i, 'prev_valid_state'] = prev_rec['state']
-                df.at[i, 'prev_valid_state_start_time'] = prev_rec['start_time']
-                
-                # Calcular distância e tempo
-                distance = self.haversine_distance(
-                    prev_rec['longitude'], prev_rec['latitude'],
-                    current['longitude'], current['latitude']
-                )
-                time_diff = (current['start_time'] - prev_rec['end_time']).total_seconds()
-                
-                # Calcular velocidade
-                speed = (distance * 3600) / time_diff if time_diff > 0 else 0
-                df.at[i, 'distance'] = distance
-                df.at[i, 'speed'] = speed
-                df.at[i, 'duration'] = time_diff
-                
-                # Verificar se o movimento é possível
-                is_movement_possible = time_diff > 60 and distance > 0 and (speed * (time_diff / 3600)) >= distance
-                df.at[i, 'is_movement_possible'] = is_movement_possible
-                # Detectar tipo de veículo
-                df.at[i, 'vehicle_type'] = self.detect_vehicle_type(speed, distance, time_diff)
 
-                # Verificar divergência de estado
-                state_divergence = current['state'] != prev_rec['state']
-                
-                # Se estados divergem e movimento não é possível, marcar como tower jump
-                if state_divergence and not is_movement_possible:
-                    df.at[i, 'tower_jump'] = True
-                    df.at[i, 'conflict_resolution'] = 'STATE_DIVERGENCE'
-                    df.at[i, 'discarded_state'] = prev_rec['state']
-                    df.at[i, 'resolved_by'] = 'DISTANCE_TIME_ANALYSIS'
-                    
-                    # Verificar consistência com estado posterior
-                    if next_index < len(df):
-                        next_rec = df.iloc[next_index]
-                        df.at[i, 'next_valid_state'] = next_rec['state']
-                        
-                        # Se próximo estado volta ao estado anterior, confirma tower jump
-                        if next_rec['state'] == prev_rec['state']:
-                            df.at[i, 'conflict_resolution'] = 'STATE_RECOVERY'
-            
-            # Processar se encontrou estado válido posterior mas não anterior
-            elif next_index < len(df):
-                next_rec = df.iloc[next_index]
-                df.at[i, 'next_valid_state'] = next_rec['state']
-                
-                # Calcular distância e tempo para o próximo válido
-                distance = self.haversine_distance(
-                    current['longitude'], current['latitude'],
-                    next_rec['longitude'], next_rec['latitude']
-                )
-                time_diff = (next_rec['start_time'] - current['end_time']).total_seconds()
-                
-                # Calcular velocidade
-                speed = (distance * 3600) / time_diff if time_diff > 0 else 0
-                
-                # Verificar se o movimento é possível
-                is_movement_possible = (speed * (time_diff / 3600)) >= distance
+            historical_divergence = (
+                older_idx is not None and
+                row['state'] != df.at[older_idx, 'state']
+            )
 
-                # Se movimento não é possível, marcar como tower jump
-                if not is_movement_possible:
-                    df.at[i, 'tower_jump'] = True
-                    df.at[i, 'conflict_resolution'] = 'STATE_DIVERGENCE_FORWARD'
-                    df.at[i, 'discarded_state'] = next_rec['state']
-                    df.at[i, 'resolved_by'] = 'DISTANCE_TIME_ANALYSIS'
+            if older_idx is None or historical_divergence:
+                df.at[i, 'tower_jump'] = True
+                df.at[i, 'conflict_resolution'] = 'STATE_DIVERGENCE'
+                df.at[i, 'discarded_state'] = base_state
+                df.at[i, 'resolved_by'] = 'DISTANCE_TIME_ANALYSIS'
+                df.at[i, 'older_state_index'] = older_idx
+                df.at[i, 'older_state'] = df.at[older_idx, 'state'] if older_idx is not None else None
+
+                # Verificação do estado posterior
+                if i + 1 < len(df) and df.at[i + 1, 'state'] == base_state:
+                    df.at[i, 'conflict_resolution'] = 'STATE_RECOVERY'
 
         return df
-   
+
     def load_data(self, file_path):
         """Carrega e processa os dados do arquivo CSV usando pandas"""
         try:
@@ -490,8 +381,7 @@ class TowerJumpAnalyzer:
             # Prepara o DataFrame para exportação
             export_df = df[[
                 'start_time_str', 'end_time_str', 'latitude', 'longitude',
-                'state', 'discarded_state', 'prev_valid_state', 'next_valid_state',
-                'same_time_diff_state', 
+                'state', 'discarded_state',
                 'duration', 'speed_str', 'distance_str', 'vehicle_type', 
                 'movement_possible', 'tower_jump', 'conflict_resolution', 
                 'resolved_by', 'location_score', 'confidence'
