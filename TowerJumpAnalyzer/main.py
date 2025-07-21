@@ -91,26 +91,32 @@ class TowerJumpAnalyzer:
             traceback.print_exc()
             return False
 
-    def detect_vehicle_type(self, speed, distance, time_diff):
-        # if distance == 0:
-        # #     return 'UNKNOWN'
-        
-        vehicle_types = {
-            'Andando': (0, 7),
-            'Bicicleta': (7, 30),
-            'Carro': (20, 200),
-            'Ônibus': (10, 120),
-            'Barco': (5, 100),
-            'Trem': (30, 300),
-            'Avião': (200, 900),
-        }
-        
-        for vehicle, (min_speed, max_speed) in vehicle_types.items():
-            if min_speed <= speed <= max_speed:
-                if time_diff > 60 and (speed * (time_diff / 3600)) >= distance:
-                    return vehicle
-                    
-        return 'UNKNOWN'
+
+    def detect_vehicle_type_vectorized(df):
+        """
+        Adiciona a coluna 'vehicle_type' ao DataFrame com base em condições vetorizadas
+        usando speed, distance e time_diff (em segundos).
+        """
+
+        # Converte tempo de segundos para horas
+        df['time_hours'] = df['time_diff_seconds'] / 3600
+        df['effective_distance'] = df['speed'] * df['time_hours']
+
+        conditions = [
+            (df['speed'].between(0, 7)) & (df['time_diff_seconds'] > 60) & (df['effective_distance'] >= df['distance']),
+            (df['speed'].between(7, 30)) & (df['time_diff_seconds'] > 60) & (df['effective_distance'] >= df['distance']),
+            (df['speed'].between(20, 200)) & (df['time_diff_seconds'] > 60) & (df['effective_distance'] >= df['distance']),
+            (df['speed'].between(10, 120)) & (df['time_diff_seconds'] > 60) & (df['effective_distance'] >= df['distance']),
+            (df['speed'].between(5, 100)) & (df['time_diff_seconds'] > 60) & (df['effective_distance'] >= df['distance']),
+            (df['speed'].between(30, 300)) & (df['time_diff_seconds'] > 60) & (df['effective_distance'] >= df['distance']),
+            (df['speed'].between(200, 900)) & (df['time_diff_seconds'] > 60) & (df['effective_distance'] >= df['distance']),
+        ]
+
+        choices = ['Andando', 'Bicicleta', 'Carro', 'Ônibus', 'Barco', 'Trem', 'Avião']
+
+        df['vehicle_type'] = np.select(conditions, choices, default='UNKNOWN')
+
+        return df
 
     def detect_jumps(self, df):
         if df.empty:
@@ -126,6 +132,38 @@ class TowerJumpAnalyzer:
             df['latitude'].notna() & (df['latitude'] != 0) &
             df['longitude'].notna() & (df['longitude'] != 0)
         )
+
+        # Crie uma coluna auxiliar com o estado apenas se for válido
+        df['valid_state'] = df['state'].where(df['is_state_valid'])
+
+        # Inicializa vetor vazio
+        previous_different = [None] * len(df)
+
+        last_valid_state = None
+        for i in range(len(df)):
+            current_state = df.loc[i, 'state']
+            if pd.notna(df.loc[i, 'valid_state']):
+                if last_valid_state is not None and last_valid_state != current_state:
+                    previous_different[i] = last_valid_state
+                last_valid_state = df.loc[i, 'valid_state']
+            else:
+                previous_different[i] = last_valid_state if last_valid_state != current_state else None
+
+        df['previous_valid_different_state'] = previous_different
+
+        next_different = [None] * len(df)
+
+        next_valid_state = None
+        for i in reversed(range(len(df))):
+            current_state = df.loc[i, 'state']
+            if pd.notna(df.loc[i, 'valid_state']):
+                if next_valid_state is not None and next_valid_state != current_state:
+                    next_different[i] = next_valid_state
+                next_valid_state = df.loc[i, 'valid_state']
+            else:
+                next_different[i] = next_valid_state if next_valid_state != current_state else None
+
+        df['next_valid_different_state'] = next_different
 
         # ---------------------------------------------
         # 2. Colunas de tempo e comparação
@@ -148,6 +186,7 @@ class TowerJumpAnalyzer:
 
         df['distance'] = 0.0
         df['speed'] = 0.0
+        df['duration'] = df['time_diff']
         df.loc[valid_movement_mask, 'distance'] = self.haversine_distance_vectorized(
             df.loc[valid_movement_mask, 'prev_lon'],
             df.loc[valid_movement_mask, 'prev_lat'],
@@ -160,6 +199,7 @@ class TowerJumpAnalyzer:
 
         df['is_movement_possible'] = (
             (df['distance'] > 0) &
+            (df['speed'] > 0) &
             ((df['speed'] * (df['time_diff'] / 3600)) >= df['distance'])
         )
 
