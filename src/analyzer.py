@@ -755,10 +755,23 @@ class TowerJumpAnalyzer:
         data = self.fix_consecutive_unknowns(data)
 
         # VERIFICAÇÃO FINAL - GARANTIR QUE REGISTROS SEM COORDENADAS SÃO UNKNOWN
+        # print("Verificando consistência final...")
+        # invalid_count = 0
+        # for entry in data:
+        #     if (entry['latitude'] is None or entry['longitude'] is None) and entry['state'] != 'UNKNOWN':
+        #         entry['state'] = 'UNKNOWN'
+        #         entry['confidence'] = 0
+        #         entry['location_score'] = 0
+        #         entry['conflict_resolution'] = 'INVALID_COORDS'
+        #         entry['resolved_by'] = 'FINAL_VALIDATION'
+        #         invalid_count += 1
+        
         print("Verificando consistência final...")
         invalid_count = 0
         for entry in data:
-            if (entry['latitude'] is None or entry['longitude'] is None) and entry['state'] != 'UNKNOWN':
+            if ((entry['latitude'] is None or entry['longitude'] is None or 
+                entry['latitude'] == 0 or entry['longitude'] == 0) and 
+                entry['state'] != 'UNKNOWN'):
                 entry['state'] = 'UNKNOWN'
                 entry['confidence'] = 0
                 entry['location_score'] = 0
